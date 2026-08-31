@@ -68,14 +68,17 @@ class MirrorSession {
 
  private:
   bool CreateDeviceForAdapter(LUID luid);
-  // Recomputes crossAdapter_ from the current source/target and derives the
-  // present mode from it. Tearing is not offered across adapters.
+  // Recomputes crossAdapter_ from the current source and target, logging the
+  // transition. Nothing is refused: it only decides what gets said.
   void ApplyAdapterPolicy(bool announce);
   bool FindOutput(const DisplayInfo& display, IDXGIOutput** output);
   bool StartCapture();
   bool BuildPipeline(StartError* error, std::wstring* message);
   void TearDownPipeline();
   void ScheduleRetry(const wchar_t* reason);
+  // Emits one line of frame statistics per interval. Silent while nothing is
+  // being presented, so an idle desktop does not fill the log.
+  void LogFrameStatsIfDue();
 
   Microsoft::WRL::ComPtr<ID3D11Device> device_;
   Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter_;
@@ -83,8 +86,6 @@ class MirrorSession {
   DuplicationCapture capture_;
   Renderer renderer_;
   MirrorConfig config_;
-  // What the user asked for, before the cross-adapter policy is applied to it.
-  PresentMode requestedPresentMode_ = PresentMode::VSyncWaitable;
 
   bool running_ = false;
   // Source and target displays are driven by different GPUs.
@@ -95,6 +96,15 @@ class MirrorSession {
   UINT retryCount_ = 0;
   bool retryLogged_ = false;
   bool haveFrame_ = false;
+
+  // Frame statistics for the current interval. Presented and acquired should
+  // track each other; a high timeout count means the source is producing
+  // fewer frames than the target can show, which is normal for video.
+  DWORD statsStartedAtTick_ = 0;
+  UINT statPresented_ = 0;
+  UINT statAcquired_ = 0;
+  UINT statTimeouts_ = 0;
+  UINT statNothingToShow_ = 0;
 };
 
 }  // namespace dm

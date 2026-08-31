@@ -65,6 +65,11 @@ class Renderer {
 
   // Blocks until the swap chain is ready for a new frame (waitable mode only).
   // Returns false if the wait failed, which is treated as a device problem.
+  //
+  // The waitable object is a semaphore that Present replenishes, so a wait
+  // that is not followed by a Present would spend a token for nothing. The
+  // token is therefore held across calls and only spent by RenderAndPresent:
+  // callers are free to wait and then decide there is nothing to show.
   bool WaitForPresentReady();
 
   // Draws the source texture scaled into the target and presents.
@@ -122,6 +127,9 @@ class Renderer {
 
   HWND hwnd_ = nullptr;
   HANDLE frameLatencyWaitable_ = nullptr;
+  // True when a token has been taken from frameLatencyWaitable_ and not yet
+  // spent on a Present. See WaitForPresentReady.
+  bool presentCredit_ = false;
   UINT backBufferWidth_ = 0;
   UINT backBufferHeight_ = 0;
   UINT swapChainFlags_ = 0;

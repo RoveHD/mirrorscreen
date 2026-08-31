@@ -21,6 +21,9 @@ constexpr DWORD kRetryDelayMs = 200;
 constexpr DWORD kSlowRetryDelayMs = 1000;
 constexpr UINT kFastRetryCount = 25;
 
+// How often one line of frame statistics is written while mirroring.
+constexpr DWORD kStatsIntervalMs = 10000;
+
 bool SameLuid(const LUID& a, const LUID& b) {
   return a.LowPart == b.LowPart && a.HighPart == b.HighPart;
 }
@@ -166,18 +169,16 @@ void MirrorSession::ApplyAdapterPolicy(bool announce) {
     DM_INFO(L"Source and target are on the same GPU again.");
   }
 
-  // A cross-adapter present is composited by DWM, so it can never reach
-  // independent flip and tearing mode buys nothing. Worse, the tearing loop is
-  // unpaced: it would push every source frame - 360 per second here - across
-  // the bus. Pace on the target instead.
-  const PresentMode effective =
-      crossAdapter_ ? PresentMode::VSyncWaitable : requestedPresentMode_;
-  if (effective != config_.presentMode) {
-    config_.presentMode = effective;
-    if (crossAdapter_ && requestedPresentMode_ == PresentMode::AllowTearing) {
-      DM_WARN(L"Allow-tearing is not available across GPUs; using the waitable "
-              L"swap chain instead.");
-    }
+  // Tearing mode stays available across adapters. The present is composited by
+  // DWM either way, so the flag cannot reach independent flip here and its only
+  // real effect is to unpace the loop - every source frame goes across the bus
+  // instead of one per target refresh. That costs bandwidth rather than
+  // correctness, and it is the user's call to make, so it is logged, not
+  // overridden.
+  if (crossAdapter_ && config_.presentMode == PresentMode::AllowTearing &&
+      (announce || changed)) {
+    DM_INFO(L"Allow-tearing across GPUs: the loop is no longer paced by the "
+            L"target, so every source frame is copied to the other adapter.");
   }
 }
 
@@ -200,7 +201,6 @@ bool MirrorSession::Start(const MirrorConfig& config, StartError* error,
           config_.source.RefreshHz(), config_.target.friendlyName.c_str(),
           config_.target.width, config_.target.height, config_.target.RefreshHz());
 
-  requestedPresentMode_ = config_.presentMode;
   ApplyAdapterPolicy(/*announce=*/true);
 
   if (!BuildPipeline(error, message)) {
@@ -219,6 +219,8 @@ bool MirrorSession::Start(const MirrorConfig& config, StartError* error,
   }
 
   running_ = true;
+  statsStartedAtTick_ = GetTickCount();
+  statPresented_ = statAcquired_ = statTimeouts_ = statNothingToShow_ = 0;
   needCaptureRestart_ = false;
   needFullRestart_ = false;
   retryAtTick_ = 0;
@@ -324,6 +326,24 @@ void MirrorSession::OnDisplayChange() {
   }
 }
 
+void MirrorSession::LogFrameStatsIfDue() {
+  const DWORD now = GetTickCount();
+  const DWORD elapsed = now - statsStartedAtTick_;
+  if (elapsed < kStatsIntervalMs) return;
+
+  // Nothing presented means an idle desktop, which is not worth a log line.
+  if (statPresented_ > 0) {
+    const double seconds = elapsed / 1000.0;
+    DM_INFO(L"Frames: %.1f presented/s, %.1f acquired/s, %.1f acquire timeouts/s, "
+            L"%u with nothing to show",
+            statPresented_ / seconds, statAcquired_ / seconds, statTimeouts_ / seconds,
+            statNothingToShow_);
+  }
+
+  statsStartedAtTick_ = now;
+  statPresented_ = statAcquired_ = statTimeouts_ = statNothingToShow_ = 0;
+}
+
 bool MirrorSession::Tick() {
   if (!running_) return false;
 
@@ -392,9 +412,13 @@ bool MirrorSession::Tick() {
     return true;
   }
 
+  LogFrameStatsIfDue();
+
   // Wait for the swap chain first, then take the newest capture frame. Doing
   // it in this order is what keeps latency down: by the time we ask Desktop
-  // Duplication for a frame, the target is already ready to show it.
+  // Duplication for a frame, the target is already ready to show it. The wait
+  // holds its semaphore token until a Present actually spends it, so coming
+  // back here without having presented costs nothing.
   if (!renderer_.WaitForPresentReady()) {
     needFullRestart_ = true;
     ScheduleRetry(L"The swap chain stopped signalling.");
@@ -407,6 +431,7 @@ bool MirrorSession::Tick() {
     case DuplicationCapture::Status::Timeout:
       // No new content on the source. Nothing to present: the flip model keeps
       // the last frame on screen, so this costs nothing and adds no latency.
+      ++statTimeouts_;
       return true;
 
     case DuplicationCapture::Status::Lost:
@@ -423,6 +448,7 @@ bool MirrorSession::Tick() {
       return true;
 
     case DuplicationCapture::Status::Frame:
+      ++statAcquired_;
       break;
   }
 
@@ -431,8 +457,12 @@ bool MirrorSession::Tick() {
 
   // A pointer-only update still has to be presented, because we composite the
   // cursor ourselves. But there is nothing to show before the first real frame.
-  if (!haveFrame_) return true;
+  if (!haveFrame_) {
+    ++statNothingToShow_;
+    return true;
+  }
   if (!frame.desktopUpdated && !frame.pointerMoved && !frame.pointerShapeChanged) {
+    ++statNothingToShow_;
     return true;
   }
 
@@ -446,6 +476,8 @@ bool MirrorSession::Tick() {
     }
     needFullRestart_ = true;
     ScheduleRetry(L"Presentation failed.");
+  } else {
+    ++statPresented_;
   }
 
   return true;

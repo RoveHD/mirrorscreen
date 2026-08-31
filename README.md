@@ -124,6 +124,37 @@ it presents as fast as the source produces frames — lowest latency, visible
 tearing, higher GPU load. The checkbox is greyed out on systems that do not
 report support.
 
+#### The waitable object is a semaphore, and that has a rule
+
+`GetFrameLatencyWaitableObject` does not return an event that is simply "set"
+when the swap chain is ready. It returns a **semaphore**, created with one
+token per allowed frame in flight, and `Present` releases a token back when the
+frame retires. Waiting takes a token.
+
+The rule that falls out of it: **a wait must be followed by a `Present`.** A
+wait that is not spent leaks its token, and since only `Present` gives one
+back, the semaphore stays empty and the *next* wait blocks until its timeout.
+
+That is easy to get wrong here, because the loop deliberately does not present
+on every pass. It waits first and only then asks Desktop Duplication for a
+frame, and the acquire can legitimately come back with nothing to show — a
+`WAIT_TIMEOUT` on a source that has not changed, an access loss, a
+pointer-only update while the cursor is switched off. Every one of those paths
+returns without presenting.
+
+The symptom is specific and misleading: the desktop looks perfect while
+anything is moving continuously, because a moving window repaints on every
+source refresh and the acquire never times out. Video is where it shows. A
+video repaints at its own frame rate, not the monitor's, so acquires that come
+back empty are routine — and each one costs a full timeout on the very next
+pass. It reads as stutter that only affects video, and it disappears entirely
+in tearing mode, where the swap chain has no waitable object at all.
+
+The fix is to hold the token rather than spend it: `WaitForPresentReady` takes
+one at most once, keeps it across calls, and `RenderAndPresent` is the only
+thing that clears it. A caller may wait, decide there is nothing worth showing,
+and come back later without paying twice.
+
 `SetFullscreenState(TRUE)` is deliberately **not** used. A borderless
 flip-model window is better here on every axis: DXGI never takes ownership of
 the TV's display mode (which is the whole point — the TV must keep its own
@@ -272,14 +303,14 @@ What it costs:
 | CPU readback | None | None |
 | Extra latency | — | Roughly one frame |
 | Bus traffic | — | One target-sized frame per presented frame, over PCIe |
-| `ALLOW_TEARING` | Available | Not offered — see below |
+| `ALLOW_TEARING` | Independent flip | No independent flip, only an unpaced loop |
 
-Tearing mode is deliberately unavailable across adapters. A cross-adapter
-present is composited by DWM and can never reach independent flip, so the flag
-would not buy the tearing path's one advantage while still removing the pacing:
-the loop would stop waiting on the target and push every source frame — 360 per
-second on a 360 Hz monitor — across the bus to be dropped at the other end. The
-checkbox greys out and says so as soon as a cross-GPU pair is selected.
+Tearing mode stays available across adapters, but it does something different
+there. A cross-adapter present is composited by DWM and cannot reach
+independent flip, so the flag's real effect is only that the loop stops waiting
+on the target: every source frame — up to 360 per second on a 360 Hz monitor —
+is then copied across the bus instead of one per target refresh. That is a
+bandwidth cost, not a correctness problem, so it is logged rather than refused.
 
 The cross-adapter state is logged on start, and re-evaluated on every display
 change: a display can come back on a different adapter than it left on, and the
@@ -421,7 +452,8 @@ in the requirements.
 * **HDR source on an SDR target** is tone mapped, not exact. Enable HDR on the
   target for true pass-through.
 * **Across two GPUs**, DWM copies each presented frame to the target's adapter:
-  about one frame of extra latency, and `ALLOW_TEARING` is not offered.
+  about one frame of extra latency, and `ALLOW_TEARING` cannot reach
+  independent flip there.
 * **Aspect-fit only.** Stretch and crop/fill are not implemented yet.
 * **Protected content** appears black. By design.
 * **XOR cursors** (`MONOCHROME` with both mask bits set, and `MASKED_COLOR` with
@@ -458,6 +490,20 @@ What has been exercised on real hardware so far:
 container with no Windows machine, no GPU and no displays, so capture, scaling,
 presentation and every recovery path are still unexercised. The checklist below
 is what needs to be verified on the target machine.
+
+### Frame statistics
+
+While mirroring, one line is written every ten seconds:
+
+```
+[19:52:14.031] INFO  Frames: 59.8 presented/s, 60.1 acquired/s, 0.3 acquire timeouts/s, 0 with nothing to show
+```
+
+Presented and acquired should track each other. A presented rate well below the
+target's refresh while something is moving on the source is the signal that the
+loop is stalling somewhere; a high timeout count on its own is normal, and just
+means the source is producing fewer frames than the target could show. Nothing
+is logged while the desktop is idle.
 
 ### Test checklist
 

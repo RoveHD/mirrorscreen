@@ -402,6 +402,7 @@ void Renderer::ReleaseSwapChain() {
     CloseHandle(frameLatencyWaitable_);
     frameLatencyWaitable_ = nullptr;
   }
+  presentCredit_ = false;
   swapChain_.Reset();
   backBufferWidth_ = backBufferHeight_ = 0;
   swapChainFlags_ = 0;
@@ -598,10 +599,32 @@ bool Renderer::UpdateTargetGeometry(const DisplayInfo& target) {
 
 bool Renderer::WaitForPresentReady() {
   if (!frameLatencyWaitable_) return true;
+
+  // The frame latency waitable object is a *semaphore*, not an event: it is
+  // created with one token per allowed frame in flight and Present releases a
+  // token back when the frame retires. Waiting takes a token.
+  //
+  // So a wait that is not followed by a Present spends a token that nothing
+  // gives back, and the next wait finds the semaphore empty and blocks until
+  // the cap below. That is exactly what happens on the frame path: the caller
+  // waits here first and only then asks Desktop Duplication for a frame, and
+  // any acquire that comes back empty - a timeout, an access loss, a
+  // pointer-only update - leaves without presenting.
+  //
+  // Holding the token across calls instead fixes it. Once taken it stays taken
+  // until RenderAndPresent actually spends it, so a caller may wait, find
+  // nothing worth showing, and come back later without paying twice.
+  if (presentCredit_) return true;
+
   // A one-second cap: if the swap chain never signals, something is wrong and
   // the caller should get a chance to re-check the display topology.
   const DWORD result = WaitForSingleObjectEx(frameLatencyWaitable_, 1000, TRUE);
-  return result == WAIT_OBJECT_0 || result == WAIT_TIMEOUT || result == WAIT_IO_COMPLETION;
+  if (result == WAIT_OBJECT_0) {
+    presentCredit_ = true;
+    return true;
+  }
+  // A timed-out or alerted wait takes no token, so nothing is held here.
+  return result == WAIT_TIMEOUT || result == WAIT_IO_COMPLETION;
 }
 
 bool Renderer::UploadCursor(const CursorImage& image) {
@@ -791,6 +814,9 @@ bool Renderer::RenderAndPresent(const DuplicationCapture& capture, HRESULT* hr) 
   } else {
     *hr = swapChain_->Present(1, 0);
   }
+  // The token taken in WaitForPresentReady is spent now, whatever Present
+  // returned: a failed Present is followed by a rebuild, not by another wait.
+  presentCredit_ = false;
 
   if (*hr == DXGI_STATUS_OCCLUDED) {
     if (!occluded_) {
