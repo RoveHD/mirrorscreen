@@ -48,4 +48,12 @@ void SaveSettings(const Settings& settings);
 bool IsStartWithWindowsEnabled();
 bool SetStartWithWindows(bool enabled);
 
+// No installer is involved: the Run entry is simply the absolute path of
+// wherever this executable happens to live. Moving it therefore breaks the
+// entry, and Windows fails silently on a path that no longer exists. Called at
+// startup, this rewrites an enabled entry that points somewhere other than the
+// running executable, so moving the exe and starting it once repairs it.
+// Returns true when it had to change something.
+bool RefreshStartWithWindowsPath();
+
 }  // namespace dm

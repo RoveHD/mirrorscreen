@@ -347,6 +347,33 @@ no dependency either.
 Opening the folder directly in Visual Studio ("Open a local folder") also works,
 since VS picks up `CMakeLists.txt` natively.
 
+### Installer
+
+`installer/DisplayMirror.nsi` builds a per-user installer with NSIS:
+
+```bat
+makensis -DAPP_EXE=..\build\Release\DisplayMirror.exe installer\DisplayMirror.nsi
+```
+
+`makensis` also runs on Linux, so the installer can be produced from the same
+place the cross-compile happens.
+
+It installs into `%LOCALAPPDATA%\Programs\DisplayMirror` and **never asks for
+administrator rights**. That is deliberate rather than lazy: the program keeps
+its settings in `HKCU`, puts its autostart entry in the `HKCU` Run key, and
+writes its log next to its own executable. Installing into `Program Files`
+would need elevation and would then leave the log unwritable.
+
+It also closes a running copy before overwriting the executable (through the
+tray menu's Exit command, since `WM_CLOSE` only hides the window), registers in
+Add/Remove Programs, and on uninstall removes the Run entry and the saved
+settings — an autostart entry pointing at a file that has been uninstalled is
+exactly the kind of leftover that makes Windows slow to log in.
+
+Installing is optional. The program is a single self-contained `.exe` and runs
+from anywhere; see the note under "Start with Windows" for the one thing to
+watch out for when running it portable.
+
 ---
 
 ## Using it
@@ -404,7 +431,25 @@ step to forget and no settings file to lose.
 | **Mirror the mouse cursor** | Composites the pointer. Can be toggled while mirroring. |
 | **Allow tearing** | **On by default.** Greyed out when DXGI reports no tearing support. Takes effect at the next start, since the flag is baked into the swap chain. |
 | **Start with Windows** | Adds this executable to `HKCU\...\CurrentVersion\Run`, with `--minimized`, which starts it straight into the tray: no window and no taskbar button at logon. |
+
 | **Start mirroring when both displays are connected** | Off until you ask for it. Once on, mirroring starts by itself whenever the saved pair is complete. |
+
+#### "Start with Windows" without an installer
+
+No installation is required for autostart. The Run entry is simply the absolute
+path of wherever this executable happens to be when the box is ticked, and
+Windows launches it from there. Nothing is registered, nothing is copied.
+
+The catch is the same path: **move or delete the exe and the entry breaks**,
+and Windows fails silently on a path that no longer exists — no error, it just
+does not start. So either install it, or put the exe somewhere permanent before
+ticking the box. A folder that gets cleaned out, like `Downloads`, is the wrong
+place for it.
+
+Starting a moved copy repairs the entry: on every start, an enabled autostart
+entry that points somewhere other than the running executable is rewritten to
+the current path, and the change is logged. That covers moving the exe, but
+not deleting it.
 
 The saved pair is stored as each monitor's **device path**, not as its name or
 its `\\.\DISPLAYn` number. That matters: `\\.\DISPLAY2` is reassigned when a
@@ -585,6 +630,10 @@ Settings and autostart:
 - [ ] The saved pair is still matched after a reboot
 - [ ] The saved pair is still matched with two identical monitors attached
 - [ ] "Start with Windows" launches it minimised at logon
+- [ ] Moving the exe and starting it repairs the autostart entry
+- [ ] The installer installs without an administrator prompt
+- [ ] The installer closes a running copy before replacing it
+- [ ] Uninstalling removes the Run entry, the settings and the shortcut
 - [ ] Auto-start fires when the TV is switched on
 - [ ] Auto-start does *not* restart a session stopped by hand
 - [ ] Switching the TV off and on re-arms auto-start after a manual stop

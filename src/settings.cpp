@@ -122,6 +122,25 @@ bool IsStartWithWindowsEnabled() {
   return present;
 }
 
+bool RefreshStartWithWindowsPath() {
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_READ, &key) != ERROR_SUCCESS) {
+    return false;
+  }
+  const std::wstring stored = ReadString(key, kRunValue);
+  RegCloseKey(key);
+
+  // Not enabled at all: nothing to repair, and nothing to add either.
+  if (stored.empty()) return false;
+
+  const std::wstring expected = QuotedExePath();
+  if (expected.empty() || stored == expected) return false;
+
+  DM_WARN(L"The autostart entry pointed at %s but this copy is %s; updating it.",
+          stored.c_str(), expected.c_str());
+  return SetStartWithWindows(true);
+}
+
 bool SetStartWithWindows(bool enabled) {
   HKEY key = nullptr;
   if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_WRITE, &key) != ERROR_SUCCESS) {

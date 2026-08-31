@@ -665,6 +665,10 @@ bool ConfigWindow::Create(bool startMinimized) {
   tearingSupported_ = Renderer::SystemSupportsTearing();
   // Before the window exists: WM_CREATE builds the controls from these.
   settings_ = LoadSettings();
+  // No installer, so the Run entry is just this file's path. If the exe was
+  // moved since it was enabled, repair the entry now rather than let Windows
+  // fail silently at the next logon.
+  RefreshStartWithWindowsPath();
 
   WNDCLASSEXW wc = {};
   wc.cbSize = sizeof(wc);
