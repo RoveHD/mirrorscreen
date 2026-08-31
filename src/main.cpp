@@ -15,6 +15,7 @@
 #include "log.h"
 #include "mirror.h"
 #include "renderer.h"
+#include "settings.h"
 
 namespace dm {
 namespace {
@@ -28,6 +29,8 @@ enum ControlId : int {
   kIdTargetCombo,
   kIdCursorCheck,
   kIdTearingCheck,
+  kIdAutoRunCheck,
+  kIdAutoMirrorCheck,
   kIdStartButton,
   kIdRefreshButton,
   kIdLogBox,
@@ -40,7 +43,7 @@ constexpr UINT kHotkeyVk = 'M';
 
 class ConfigWindow {
  public:
-  bool Create();
+  bool Create(bool startMinimized);
   int Run();
 
   // Routes log lines into the window's log pane. Installed before the window
@@ -59,19 +62,34 @@ class ConfigWindow {
   void UpdateStartButton();
   void AppendLog(const std::wstring& line);
 
+  // Index into displays_ of the monitor with this persistent id, or -1.
+  int IndexOfPersistentId(const std::wstring& persistentId) const;
+  // Writes the current selection and checkbox states back to the registry.
+  // Called on every change: there is no separate save step to forget.
+  void SaveCurrentSettings();
+  // Starts mirroring by itself when the saved pair is fully connected.
+  void MaybeAutoStartMirroring();
+
   HWND hwnd_ = nullptr;
   HWND sourceCombo_ = nullptr;
   HWND targetCombo_ = nullptr;
   HWND cursorCheck_ = nullptr;
   HWND tearingCheck_ = nullptr;
+  HWND autoRunCheck_ = nullptr;
+  HWND autoMirrorCheck_ = nullptr;
   HWND startButton_ = nullptr;
   HWND logBox_ = nullptr;
   HFONT font_ = nullptr;
 
   std::vector<DisplayInfo> displays_;
   MirrorSession session_;
+  Settings settings_;
   bool tearingSupported_ = false;
   bool hotkeyRegistered_ = false;
+  // Set when the user stops mirroring by hand, so auto-start does not
+  // immediately undo it. Cleared as soon as the saved pair is incomplete
+  // again, which is what makes switching the TV off and on re-arm it.
+  bool autoStartSuppressed_ = false;
 };
 
 ConfigWindow* g_window = nullptr;
@@ -127,21 +145,39 @@ void ConfigWindow::CreateControls(HWND parent) {
 
   cursorCheck_ = add(L"BUTTON", L"Mirror the mouse cursor", BS_AUTOCHECKBOX, 12, 126, 200,
                      22, kIdCursorCheck);
-  SendMessageW(cursorCheck_, BM_SETCHECK, BST_CHECKED, 0);
+  SendMessageW(cursorCheck_, BM_SETCHECK,
+               settings_.drawCursor ? BST_CHECKED : BST_UNCHECKED, 0);
 
   tearingCheck_ = add(L"BUTTON", L"Allow tearing (lowest latency, may tear)",
-                      BS_AUTOCHECKBOX, 220, 126, 280, 22, kIdTearingCheck);
+                      BS_AUTOCHECKBOX, 220, 126, 300, 22, kIdTearingCheck);
+  // Defaults to on, so it is only ever off because the user turned it off or
+  // because this system does not report tearing support.
+  SendMessageW(tearingCheck_, BM_SETCHECK,
+               (settings_.allowTearing && tearingSupported_) ? BST_CHECKED : BST_UNCHECKED,
+               0);
   EnableWindow(tearingCheck_, tearingSupported_);
 
-  startButton_ = add(L"BUTTON", L"Start mirroring", BS_DEFPUSHBUTTON, 12, 158, 160, 30,
+  autoRunCheck_ = add(L"BUTTON", L"Start with Windows", BS_AUTOCHECKBOX, 12, 154, 200, 22,
+                      kIdAutoRunCheck);
+  // Read from the Run key rather than from our own settings, so the checkbox
+  // cannot disagree with what Windows will actually do.
+  SendMessageW(autoRunCheck_, BM_SETCHECK,
+               IsStartWithWindowsEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
+
+  autoMirrorCheck_ = add(L"BUTTON", L"Start mirroring when both displays are connected",
+                         BS_AUTOCHECKBOX, 220, 154, 430, 22, kIdAutoMirrorCheck);
+  SendMessageW(autoMirrorCheck_, BM_SETCHECK,
+               settings_.autoMirror ? BST_CHECKED : BST_UNCHECKED, 0);
+
+  startButton_ = add(L"BUTTON", L"Start mirroring", BS_DEFPUSHBUTTON, 12, 186, 160, 30,
                      kIdStartButton);
-  add(L"BUTTON", L"Refresh displays", 0, 180, 158, 140, 30, kIdRefreshButton);
-  add(L"STATIC", L"Ctrl+Alt+M toggles · ESC on the output window stops", 0, 332, 165,
-      320, 20, 0);
+  add(L"BUTTON", L"Refresh displays", 0, 180, 186, 140, 30, kIdRefreshButton);
+  add(L"STATIC", L"Ctrl+Alt+M toggles \u00b7 ESC on the output window stops \u00b7 settings save "
+      L"themselves", 0, 332, 186, 320, 32, 0);
 
   logBox_ = add(L"EDIT", L"",
                 ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER, 12,
-                198, 640, 200, kIdLogBox);
+                226, 640, 200, kIdLogBox);
 }
 
 void ConfigWindow::RefreshDisplays() {
@@ -165,9 +201,11 @@ void ConfigWindow::RefreshDisplays() {
     return;
   }
 
-  // Sensible defaults: capture the primary display, mirror to the first display
-  // that is not it.
-  int source = previousSource;
+  // The saved pair wins, then whatever was selected before the refresh, then
+  // the defaults: capture the primary display, mirror to the first one that is
+  // not it.
+  int source = IndexOfPersistentId(settings_.sourceId);
+  if (source < 0) source = previousSource;
   if (source < 0 || source >= static_cast<int>(displays_.size())) {
     source = 0;
     for (size_t i = 0; i < displays_.size(); ++i) {
@@ -178,7 +216,8 @@ void ConfigWindow::RefreshDisplays() {
     }
   }
 
-  int target = previousTarget;
+  int target = IndexOfPersistentId(settings_.targetId);
+  if (target < 0) target = previousTarget;
   if (target < 0 || target >= static_cast<int>(displays_.size()) || target == source) {
     target = (source + 1) % static_cast<int>(displays_.size());
   }
@@ -186,6 +225,57 @@ void ConfigWindow::RefreshDisplays() {
   SendMessageW(sourceCombo_, CB_SETCURSEL, source, 0);
   SendMessageW(targetCombo_, CB_SETCURSEL, target, 0);
   UpdateStartButton();
+}
+
+int ConfigWindow::IndexOfPersistentId(const std::wstring& persistentId) const {
+  if (persistentId.empty()) return -1;
+  for (size_t i = 0; i < displays_.size(); ++i) {
+    if (displays_[i].persistentId == persistentId) return static_cast<int>(i);
+  }
+  return -1;
+}
+
+void ConfigWindow::SaveCurrentSettings() {
+  const int source = static_cast<int>(SendMessageW(sourceCombo_, CB_GETCURSEL, 0, 0));
+  const int target = static_cast<int>(SendMessageW(targetCombo_, CB_GETCURSEL, 0, 0));
+  const int count = static_cast<int>(displays_.size());
+
+  // A selection is only overwritten when there is a real display behind it, so
+  // unplugging the TV does not wipe the pair the user saved.
+  if (source >= 0 && source < count) {
+    settings_.sourceId = displays_[static_cast<size_t>(source)].persistentId;
+    settings_.sourceName = displays_[static_cast<size_t>(source)].friendlyName;
+  }
+  if (target >= 0 && target < count) {
+    settings_.targetId = displays_[static_cast<size_t>(target)].persistentId;
+    settings_.targetName = displays_[static_cast<size_t>(target)].friendlyName;
+  }
+
+  settings_.drawCursor = SendMessageW(cursorCheck_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+  settings_.allowTearing =
+      tearingSupported_ && SendMessageW(tearingCheck_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+  settings_.autoMirror =
+      SendMessageW(autoMirrorCheck_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+  settings_.valid = true;
+  SaveSettings(settings_);
+}
+
+void ConfigWindow::MaybeAutoStartMirroring() {
+  const DisplayInfo* source = FindDisplayById(displays_, settings_.sourceId);
+  const DisplayInfo* target = FindDisplayById(displays_, settings_.targetId);
+
+  if (!source || !target || source == target) {
+    // The pair is incomplete, so re-arm: after the TV comes back on, auto-start
+    // should fire again even if the last session was stopped by hand.
+    autoStartSuppressed_ = false;
+    return;
+  }
+
+  if (!settings_.autoMirror || session_.IsRunning() || autoStartSuppressed_) return;
+
+  DM_INFO(L"Both saved displays are connected (%s -> %s); starting automatically.",
+          source->friendlyName.c_str(), target->friendlyName.c_str());
+  StartMirroring();
 }
 
 void ConfigWindow::UpdateStartButton() {
@@ -236,12 +326,15 @@ void ConfigWindow::StartMirroring() {
     return;
   }
 
+  SaveCurrentSettings();
   UpdateStartButton();
   // Get out of the way, but stay reachable in the taskbar.
   ShowWindow(hwnd_, SW_MINIMIZE);
 }
 
 void ConfigWindow::StopMirroring() {
+  // Stopping by hand wins over auto-start until the pair is broken and remade.
+  autoStartSuppressed_ = true;
   session_.Stop();
   UpdateStartButton();
   ShowWindow(hwnd_, SW_RESTORE);
@@ -288,10 +381,43 @@ LRESULT ConfigWindow::Handle(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             session_.SetDrawCursor(
                 SendMessageW(cursorCheck_, BM_GETCHECK, 0, 0) == BST_CHECKED);
           }
+          SaveCurrentSettings();
           return 0;
+        case kIdTearingCheck:
+          // Takes effect on the next start: the flag is baked into the swap
+          // chain, so changing it mid-session would mean rebuilding it.
+          if (session_.IsRunning()) {
+            DM_INFO(L"Tearing mode changed; it applies the next time mirroring "
+                    L"starts.");
+          }
+          SaveCurrentSettings();
+          return 0;
+        case kIdAutoMirrorCheck:
+          SaveCurrentSettings();
+          // Ticking the box with both displays already connected should act
+          // immediately rather than waiting for the next display change.
+          if (!session_.IsRunning()) {
+            autoStartSuppressed_ = false;
+            MaybeAutoStartMirroring();
+          }
+          return 0;
+        case kIdAutoRunCheck: {
+          const bool wanted =
+              SendMessageW(autoRunCheck_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+          if (!SetStartWithWindows(wanted)) {
+            // The registry write failed, so put the checkbox back rather than
+            // leaving it claiming something that is not true.
+            SendMessageW(autoRunCheck_, BM_SETCHECK,
+                         wanted ? BST_UNCHECKED : BST_CHECKED, 0);
+          }
+          return 0;
+        }
         case kIdSourceCombo:
         case kIdTargetCombo:
-          if (HIWORD(wparam) == CBN_SELCHANGE) UpdateStartButton();
+          if (HIWORD(wparam) == CBN_SELCHANGE) {
+            UpdateStartButton();
+            SaveCurrentSettings();
+          }
           return 0;
         default:
           break;
@@ -312,6 +438,9 @@ LRESULT ConfigWindow::Handle(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         session_.OnDisplayChange();
       } else {
         RefreshDisplays();
+        // This is the hot-plug path: the TV was switched on, or came back from
+        // standby, and the saved pair may now be complete.
+        MaybeAutoStartMirroring();
       }
       return 0;
 
@@ -351,8 +480,10 @@ LRESULT ConfigWindow::Handle(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
   return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
-bool ConfigWindow::Create() {
+bool ConfigWindow::Create(bool startMinimized) {
   tearingSupported_ = Renderer::SystemSupportsTearing();
+  // Before the window exists: WM_CREATE builds the controls from these.
+  settings_ = LoadSettings();
 
   WNDCLASSEXW wc = {};
   wc.cbSize = sizeof(wc);
@@ -364,7 +495,7 @@ bool ConfigWindow::Create() {
   wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
   if (!RegisterClassExW(&wc)) return false;
 
-  RECT rect = {0, 0, 668, 412};
+  RECT rect = {0, 0, 668, 438};
   AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW & ~WS_THICKFRAME, FALSE);
 
   hwnd_ = CreateWindowExW(0, kConfigClass, L"DisplayMirror", 
@@ -384,8 +515,11 @@ bool ConfigWindow::Create() {
 
   DM_INFO(L"Tearing support: %s", tearingSupported_ ? L"yes" : L"no");
 
-  ShowWindow(hwnd_, SW_SHOW);
+  ShowWindow(hwnd_, startMinimized ? SW_SHOWMINNOACTIVE : SW_SHOW);
   UpdateWindow(hwnd_);
+
+  // Only now, with the window up and the log pane able to show what happens.
+  MaybeAutoStartMirroring();
   return true;
 }
 
@@ -436,13 +570,19 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
   INITCOMMONCONTROLSEX icc = {sizeof(icc), ICC_STANDARD_CLASSES};
   InitCommonControlsEx(&icc);
 
+  // Started from the Run key, the window would otherwise appear in front of
+  // whatever the user is doing at logon.
+  const wchar_t* commandLine = GetCommandLineW();
+  const bool startMinimized =
+      commandLine != nullptr && wcsstr(commandLine, L"--minimized") != nullptr;
+
   dm::ConfigWindow window;
   dm::g_window = &window;
   dm::LogInit(&dm::ConfigWindow::LogSinkThunk);
   DM_INFO(L"DisplayMirror starting.");
 
   int exitCode = 1;
-  if (window.Create()) {
+  if (window.Create(startMinimized)) {
     exitCode = window.Run();
   } else {
     MessageBoxW(nullptr, L"The DisplayMirror window could not be created.",

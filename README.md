@@ -114,7 +114,9 @@ combination Microsoft documents for low-latency presentation, and it is the
 right default for a TV: a torn picture on a 120 Hz TV looks worse than the ~8 ms
 a vblank costs.
 
-**Opt-in: `ALLOW_TEARING`.** Offered only when
+**`ALLOW_TEARING`, on by default.** It is the lower-latency path and the one
+that behaves best on a cross-GPU pair, so the checkbox starts ticked; untick it
+for a tear-free picture. Offered only when
 `IDXGIFactory5::CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING)` reports
 support — tearing is never assumed. When enabled, the swap chain is created with
 `DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING` and presented with
@@ -372,6 +374,34 @@ until two different ones are selected.
 The output window is created with `WS_EX_NOACTIVATE`, so **it never steals focus
 from a running game**, and `WS_EX_TOOLWINDOW` keeps it out of Alt+Tab.
 
+### Settings, autostart and unattended mirroring
+
+Everything the config window can change — the display pair and all four
+checkboxes — is written to the registry the moment it changes. There is no save
+step to forget and no settings file to lose.
+
+| Checkbox | What it does |
+|---|---|
+| **Mirror the mouse cursor** | Composites the pointer. Can be toggled while mirroring. |
+| **Allow tearing** | **On by default.** Greyed out when DXGI reports no tearing support. Takes effect at the next start, since the flag is baked into the swap chain. |
+| **Start with Windows** | Adds this executable to `HKCU\...\CurrentVersion\Run`, with `--minimized` so it does not appear in front of you at logon. |
+| **Start mirroring when both displays are connected** | Off until you ask for it. Once on, mirroring starts by itself whenever the saved pair is complete. |
+
+The saved pair is stored as each monitor's **device path**, not as its name or
+its `\\.\DISPLAYn` number. That matters: `\\.\DISPLAY2` is reassigned when a
+display is switched off and back on, and two monitors of the same model share a
+friendly name. The device path survives a reboot, survives the TV being switched
+off, and tells two identical panels apart.
+
+With both boxes ticked the intended flow needs no interaction at all: log in,
+switch the TV on, and mirroring starts. Switch the TV off and DisplayMirror
+waits; switch it on again and it resumes.
+
+Auto-start deliberately loses to you. Stopping by hand — the button, `ESC`, or
+`Ctrl+Alt+M` — suppresses it, so it will not immediately restart what you just
+stopped. The suppression clears as soon as the pair is incomplete again, which
+means switching the TV off and on is what re-arms it.
+
 A log is written to `DisplayMirror.log` next to the executable and shown live in
 the config window. It logs state transitions only — adapters and displays
 detected, capture started, resolution changed, duplication reinitialised, target
@@ -529,8 +559,16 @@ Two GPUs (source and target on different adapters):
 - [ ] Mirroring starts at all, and the log shows the cross-GPU warning
 - [ ] The picture is correct and smooth on the target
 - [ ] The source display keeps its own refresh rate
-- [ ] The tearing checkbox is greyed out and relabelled for a cross-GPU pair
 - [ ] GPU load on the target adapter stays modest (that is the DWM copy)
+
+Settings and autostart:
+- [ ] Selection and checkboxes survive a restart of the program
+- [ ] The saved pair is still matched after a reboot
+- [ ] The saved pair is still matched with two identical monitors attached
+- [ ] "Start with Windows" launches it minimised at logon
+- [ ] Auto-start fires when the TV is switched on
+- [ ] Auto-start does *not* restart a session stopped by hand
+- [ ] Switching the TV off and on re-arms auto-start after a manual stop
 
 Games:
 - [ ] A D3D11 title, borderless

@@ -27,6 +27,13 @@ struct DisplayInfo {
   std::wstring friendlyName;  // "LG TV SSCR2", falls back to deviceName
   HMONITOR monitor = nullptr;
 
+  // Stable identity of the physical monitor, from the display config's
+  // monitorDevicePath. Unlike deviceName it survives a reboot and a display
+  // being switched off, and unlike friendlyName it tells two identical
+  // monitors apart. This is what a saved source/target pair is stored as.
+  // Falls back to deviceName when the path is unavailable.
+  std::wstring persistentId;
+
   RECT desktopCoordinates = {};
   UINT width = 0;
   UINT height = 0;
@@ -61,9 +68,15 @@ std::vector<DisplayInfo> EnumerateDisplays();
 void LogDisplays(const std::vector<DisplayInfo>& displays);
 
 // Finds the display that still matches `previous` after a display-configuration
-// change. Matches on device name first, then on the monitor handle. Returns
-// nullptr when the display is gone (TV switched off, HDMI unplugged).
+// change. Matches on the persistent monitor id first, then on device name, then
+// on the monitor handle. Returns nullptr when the display is gone (TV switched
+// off, HDMI unplugged).
 const DisplayInfo* FindMatchingDisplay(const std::vector<DisplayInfo>& displays,
                                        const DisplayInfo& previous);
+
+// Looks up a display by the persistent id a saved configuration refers to.
+// Returns nullptr when that monitor is not currently attached.
+const DisplayInfo* FindDisplayById(const std::vector<DisplayInfo>& displays,
+                                   const std::wstring& persistentId);
 
 }  // namespace dm

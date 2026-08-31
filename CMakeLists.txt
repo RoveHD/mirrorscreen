@@ -19,11 +19,13 @@ add_executable(DisplayMirror WIN32
     src/capture.cpp
     src/renderer.cpp
     src/mirror.cpp
+    src/settings.cpp
     src/log.cpp
     src/displays.h
     src/capture.h
     src/renderer.h
     src/mirror.h
+    src/settings.h
     src/log.h
 )
 

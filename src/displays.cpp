@@ -16,6 +16,7 @@ namespace {
 // name so it can be joined onto the DXGI output list.
 struct PathExtras {
   std::wstring friendlyName;
+  std::wstring monitorDevicePath;
   UINT refreshNumerator = 0;
   UINT refreshDenominator = 0;
   float sdrWhiteLevelNits = 80.0f;
@@ -68,6 +69,10 @@ std::map<std::wstring, PathExtras> QueryPathExtras() {
     target.header.id = path.targetInfo.id;
     if (DisplayConfigGetDeviceInfo(&target.header) == ERROR_SUCCESS) {
       extras.friendlyName = target.monitorFriendlyDeviceName;
+      // The device interface path of the physical monitor. Stable across
+      // reboots and across the display being switched off, and distinct for
+      // two monitors of the same model.
+      extras.monitorDevicePath = target.monitorDevicePath;
     }
 
     DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO advanced = {};
@@ -182,6 +187,7 @@ std::vector<DisplayInfo> EnumerateDisplays() {
       const auto it = extras.find(info.deviceName);
       if (it != extras.end()) {
         if (!it->second.friendlyName.empty()) info.friendlyName = it->second.friendlyName;
+        info.persistentId = it->second.monitorDevicePath;
         info.refreshNumerator = it->second.refreshNumerator;
         info.refreshDenominator = it->second.refreshDenominator;
         info.sdrWhiteLevelNits = it->second.sdrWhiteLevelNits;
@@ -191,6 +197,9 @@ std::vector<DisplayInfo> EnumerateDisplays() {
         info.hdrEnabled = info.hdrEnabled || it->second.advancedColorEnabled;
       }
       FillRefreshFallback(info);
+      // Without a monitor device path there is still an identity worth having,
+      // even if it only survives until the displays are renumbered.
+      if (info.persistentId.empty()) info.persistentId = info.deviceName;
 
       if (info.maxLuminanceNits < info.sdrWhiteLevelNits) {
         info.maxLuminanceNits = info.sdrWhiteLevelNits;
@@ -222,8 +231,22 @@ void LogDisplays(const std::vector<DisplayInfo>& displays) {
   }
 }
 
+const DisplayInfo* FindDisplayById(const std::vector<DisplayInfo>& displays,
+                                   const std::wstring& persistentId) {
+  if (persistentId.empty()) return nullptr;
+  for (const DisplayInfo& d : displays) {
+    if (d.persistentId == persistentId) return &d;
+  }
+  return nullptr;
+}
+
 const DisplayInfo* FindMatchingDisplay(const std::vector<DisplayInfo>& displays,
                                        const DisplayInfo& previous) {
+  // The monitor device path first: device names are renumbered when a display
+  // is switched off and back on, which is precisely when this is called.
+  if (const DisplayInfo* byId = FindDisplayById(displays, previous.persistentId)) {
+    return byId;
+  }
   for (const DisplayInfo& d : displays) {
     if (d.deviceName == previous.deviceName) return &d;
   }
