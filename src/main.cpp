@@ -200,7 +200,20 @@ void ConfigWindow::UpdateStartButton() {
   EnableWindow(startButton_, session_.IsRunning() || selectable);
   EnableWindow(sourceCombo_, !session_.IsRunning());
   EnableWindow(targetCombo_, !session_.IsRunning());
-  EnableWindow(tearingCheck_, tearingSupported_ && !session_.IsRunning());
+
+  // Mirroring across two GPUs works, but the frame is composited by DWM on its
+  // way to the other adapter, so it can never reach independent flip. Tearing
+  // mode would only remove the pacing, not the vblank; grey it out and say why.
+  bool sameAdapter = true;
+  if (selectable) {
+    const LUID& a = displays_[static_cast<size_t>(source)].adapterLuid;
+    const LUID& b = displays_[static_cast<size_t>(target)].adapterLuid;
+    sameAdapter = a.LowPart == b.LowPart && a.HighPart == b.HighPart;
+  }
+  EnableWindow(tearingCheck_, tearingSupported_ && sameAdapter && !session_.IsRunning());
+  SetWindowTextW(tearingCheck_, sameAdapter
+                                    ? L"Allow tearing (lowest latency, may tear)"
+                                    : L"Allow tearing (not available across GPUs)");
 }
 
 void ConfigWindow::StartMirroring() {

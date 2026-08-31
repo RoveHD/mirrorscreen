@@ -144,6 +144,43 @@ bool MirrorSession::BuildPipeline(StartError* error, std::wstring* message) {
   return true;
 }
 
+void MirrorSession::ApplyAdapterPolicy(bool announce) {
+  const bool crossAdapter =
+      !SameLuid(config_.source.adapterLuid, config_.target.adapterLuid);
+  const bool changed = crossAdapter != crossAdapter_;
+  crossAdapter_ = crossAdapter;
+
+  // Everything stays on the source GPU: the duplication, the scaling pass and
+  // the swap chain all live on the adapter that owns the source display, which
+  // is the only adapter Desktop Duplication would accept anyway. The output
+  // window sits on a display driven by the other GPU, so DWM performs the
+  // cross-adapter copy of each presented frame. That is the same path a laptop
+  // takes when the discrete GPU renders onto the panel wired to the integrated
+  // one; it is a GPU-to-GPU transfer done by the OS, with no CPU readback.
+  if (crossAdapter_ && (announce || changed)) {
+    DM_WARN(L"Source is on %s, target on %s. Presenting across GPUs: Windows "
+            L"copies every presented frame between the two adapters, which "
+            L"costs PCIe bandwidth and roughly one frame of extra latency.",
+            config_.source.adapterName.c_str(), config_.target.adapterName.c_str());
+  } else if (!crossAdapter_ && changed) {
+    DM_INFO(L"Source and target are on the same GPU again.");
+  }
+
+  // A cross-adapter present is composited by DWM, so it can never reach
+  // independent flip and tearing mode buys nothing. Worse, the tearing loop is
+  // unpaced: it would push every source frame - 360 per second here - across
+  // the bus. Pace on the target instead.
+  const PresentMode effective =
+      crossAdapter_ ? PresentMode::VSyncWaitable : requestedPresentMode_;
+  if (effective != config_.presentMode) {
+    config_.presentMode = effective;
+    if (crossAdapter_ && requestedPresentMode_ == PresentMode::AllowTearing) {
+      DM_WARN(L"Allow-tearing is not available across GPUs; using the waitable "
+              L"swap chain instead.");
+    }
+  }
+}
+
 bool MirrorSession::Start(const MirrorConfig& config, StartError* error,
                           std::wstring* message) {
   Stop();
@@ -158,26 +195,26 @@ bool MirrorSession::Start(const MirrorConfig& config, StartError* error,
     return false;
   }
 
-  if (!SameLuid(config_.source.adapterLuid, config_.target.adapterLuid)) {
-    // Version 1 deliberately does not build a cross-adapter path. Say so
-    // plainly instead of failing somewhere deep in D3D.
-    *error = StartError::DifferentAdapters;
-    *message = L"Source and target are connected to different GPUs (" +
-               config_.source.adapterName + L" and " + config_.target.adapterName +
-               L"). DisplayMirror only supports displays on the same GPU. "
-               L"Connect both displays to the same graphics card.";
-    DM_ERROR(L"Refusing to start: source is on %s, target on %s.",
-             config_.source.adapterName.c_str(), config_.target.adapterName.c_str());
-    return false;
-  }
-
   DM_INFO(L"Starting: %s (%ux%u @ %.2f Hz) -> %s (%ux%u @ %.2f Hz)",
           config_.source.friendlyName.c_str(), config_.source.width, config_.source.height,
           config_.source.RefreshHz(), config_.target.friendlyName.c_str(),
           config_.target.width, config_.target.height, config_.target.RefreshHz());
 
+  requestedPresentMode_ = config_.presentMode;
+  ApplyAdapterPolicy(/*announce=*/true);
+
   if (!BuildPipeline(error, message)) {
     TearDownPipeline();
+    // A renderer failure on a cross-adapter pair is the one case where the two
+    // GPUs really are the cause: DXGI would not give us a swap chain on the
+    // source device for a window living on the other adapter's display.
+    if (crossAdapter_ && *error == StartError::RendererFailed) {
+      *error = StartError::DifferentAdapters;
+      *message = L"Source and target are connected to different GPUs (" +
+                 config_.source.adapterName + L" and " + config_.target.adapterName +
+                 L"), and Windows refused to present across them on this system. "
+                 L"Connect both displays to the same graphics card.";
+    }
     return false;
   }
 
@@ -315,11 +352,9 @@ bool MirrorSession::Tick() {
       config_.source = *source;
       config_.target = *target;
 
-      if (!SameLuid(config_.source.adapterLuid, config_.target.adapterLuid)) {
-        DM_ERROR(L"Source and target are now on different GPUs; stopping.");
-        Stop();
-        return false;
-      }
+      // A display can come back on a different adapter than it left on, so the
+      // cross-adapter decision is re-made here rather than assumed from Start().
+      ApplyAdapterPolicy(/*announce=*/false);
 
       StartError error = StartError::None;
       std::wstring message;

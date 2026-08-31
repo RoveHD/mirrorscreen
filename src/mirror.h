@@ -30,6 +30,8 @@ struct MirrorConfig {
 enum class StartError {
   None,
   SameDisplay,
+  // Source and target are on different GPUs *and* the cross-adapter present
+  // path was refused by DXGI. The mismatch on its own is not an error.
   DifferentAdapters,
   DeviceCreationFailed,
   OutputNotFound,
@@ -66,6 +68,9 @@ class MirrorSession {
 
  private:
   bool CreateDeviceForAdapter(LUID luid);
+  // Recomputes crossAdapter_ from the current source/target and derives the
+  // present mode from it. Tearing is not offered across adapters.
+  void ApplyAdapterPolicy(bool announce);
   bool FindOutput(const DisplayInfo& display, IDXGIOutput** output);
   bool StartCapture();
   bool BuildPipeline(StartError* error, std::wstring* message);
@@ -78,8 +83,12 @@ class MirrorSession {
   DuplicationCapture capture_;
   Renderer renderer_;
   MirrorConfig config_;
+  // What the user asked for, before the cross-adapter policy is applied to it.
+  PresentMode requestedPresentMode_ = PresentMode::VSyncWaitable;
 
   bool running_ = false;
+  // Source and target displays are driven by different GPUs.
+  bool crossAdapter_ = false;
   bool needCaptureRestart_ = false;
   bool needFullRestart_ = false;
   DWORD retryAtTick_ = 0;

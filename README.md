@@ -246,13 +246,48 @@ your own display, and there is no code path that tries to be anything else.
 ## Multiple GPUs
 
 The DXGI adapter that owns each output is resolved properly, and both displays
-are matched by adapter LUID.
+are matched by adapter LUID. Source and target on **different GPUs** is
+supported — a monitor on the discrete card and a TV on a second card, or on the
+integrated GPU, all work.
 
-Version 1 supports **source and target on the same GPU**, which is the normal
-case when both are plugged into the same card. If they are on different GPUs,
-DisplayMirror refuses to start and says exactly which display is on which
-adapter, rather than crashing or failing somewhere deep inside D3D. No
-cross-adapter copy architecture is built for this case.
+There is still only ever **one D3D device**, and it lives on the adapter that
+owns the *source* display. That is not a choice: Desktop Duplication only
+accepts a device on the adapter driving the output it duplicates. So the
+capture, the scaling pass and the swap chain all stay on the source GPU, and
+the borderless output window happens to sit on a display driven by the other
+one.
+
+The transfer is then the OS's job. A windowed flip-model swap chain is
+composited by DWM, and when the window lives on another adapter's display DWM
+performs the cross-adapter copy of each presented frame. This is the same path
+a laptop takes when the discrete GPU renders onto the panel wired to the
+integrated GPU. It is a GPU-to-GPU transfer: **there is still no `Map`, no
+readback and no CPU-side framebuffer** anywhere in the frame path.
+
+What it costs:
+
+| | Same GPU | Across GPUs |
+|---|---|---|
+| Frame path | Capture → scale → Present | Capture → scale → Present → DWM copy to the other adapter |
+| CPU readback | None | None |
+| Extra latency | — | Roughly one frame |
+| Bus traffic | — | One target-sized frame per presented frame, over PCIe |
+| `ALLOW_TEARING` | Available | Not offered — see below |
+
+Tearing mode is deliberately unavailable across adapters. A cross-adapter
+present is composited by DWM and can never reach independent flip, so the flag
+would not buy the tearing path's one advantage while still removing the pacing:
+the loop would stop waiting on the target and push every source frame — 360 per
+second on a 360 Hz monitor — across the bus to be dropped at the other end. The
+checkbox greys out and says so as soon as a cross-GPU pair is selected.
+
+The cross-adapter state is logged on start, and re-evaluated on every display
+change: a display can come back on a different adapter than it left on, and the
+present mode follows it in both directions.
+
+If DXGI does refuse to create the swap chain across the two adapters on some
+system, *that* is reported as a GPU mismatch with a clear message — the pairing
+is never rejected up front any more.
 
 ---
 
@@ -385,8 +420,8 @@ in the requirements.
   captured while it holds the display. Use borderless windowed. See above.
 * **HDR source on an SDR target** is tone mapped, not exact. Enable HDR on the
   target for true pass-through.
-* **Source and target must be on the same GPU.** Refused with a clear message
-  otherwise.
+* **Across two GPUs**, DWM copies each presented frame to the target's adapter:
+  about one frame of extra latency, and `ALLOW_TEARING` is not offered.
 * **Aspect-fit only.** Stretch and crop/fill are not implemented yet.
 * **Protected content** appears black. By design.
 * **XOR cursors** (`MONOCHROME` with both mask bits set, and `MASKED_COLOR` with
@@ -410,10 +445,19 @@ What was verified:
   Desktop Duplication, `DuplicateOutput1`, the flip model, frame latency
   waitable objects, tearing support and DXGI colour spaces.
 
-**It has not been run.** It was developed in a Linux container with no Windows
-machine, no GPU and no displays, so none of the runtime behaviour has been
-exercised. The checklist below is what needs to be verified on the target
-machine.
+What has been exercised on real hardware so far:
+
+* The program **launches**, the config window comes up and the log pane fills.
+* **Display enumeration is correct** on a four-display, two-GPU machine: names,
+  resolutions, refresh rates, desktop positions, bit depth, HDR state, the
+  primary flag, and which adapter owns which output were all read back
+  accurately (`AW2725DF 2560x1440 @ 359.979 Hz, 10 bpc` on an RTX 4070;
+  `FireTV 1920x1080 @ 60 Hz` on an RTX 3050).
+
+**The frame path itself has not been run.** It was developed in a Linux
+container with no Windows machine, no GPU and no displays, so capture, scaling,
+presentation and every recovery path are still unexercised. The checklist below
+is what needs to be verified on the target machine.
 
 ### Test checklist
 
@@ -434,6 +478,13 @@ still report their own rate while mirroring**:
 - [ ] 60 Hz to 60 Hz
 - [ ] 144 Hz to 60 Hz
 - [ ] 360 Hz to 120 Hz — the target case
+
+Two GPUs (source and target on different adapters):
+- [ ] Mirroring starts at all, and the log shows the cross-GPU warning
+- [ ] The picture is correct and smooth on the target
+- [ ] The source display keeps its own refresh rate
+- [ ] The tearing checkbox is greyed out and relabelled for a cross-GPU pair
+- [ ] GPU load on the target adapter stays modest (that is the DWM copy)
 
 Games:
 - [ ] A D3D11 title, borderless

@@ -15,8 +15,9 @@
 namespace dm {
 
 struct DisplayInfo {
-  // Topology. adapterLuid is the identity that matters: source and target must
-  // share it, otherwise a cross-adapter copy would be required.
+  // Topology. adapterLuid decides how a frame reaches the target: when source
+  // and target share it everything stays on one GPU, otherwise DWM copies each
+  // presented frame across to the target's adapter.
   UINT adapterIndex = 0;
   UINT outputIndex = 0;
   LUID adapterLuid = {};
