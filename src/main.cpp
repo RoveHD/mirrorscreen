@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include <commctrl.h>
+#include <shellapi.h>
 #include <wtsapi32.h>
 
 #include <string>
@@ -15,6 +16,7 @@
 #include "log.h"
 #include "mirror.h"
 #include "renderer.h"
+#include "resource.h"
 #include "settings.h"
 
 namespace dm {
@@ -35,6 +37,21 @@ enum ControlId : int {
   kIdRefreshButton,
   kIdLogBox,
 };
+
+// The tray icon's own message, and the ids of its menu entries. Kept clear of
+// the control ids above.
+constexpr UINT kTrayCallbackMessage = WM_APP + 1;
+constexpr UINT kTrayIconId = 1;
+
+enum TrayCommand : int {
+  kIdTrayShow = 200,
+  kIdTrayToggle,
+  kIdTrayExit,
+};
+
+// Explorer re-broadcasts this after it restarts, and every tray icon has to be
+// added again or it is gone until the next logon.
+UINT g_taskbarCreatedMessage = 0;
 
 // Ctrl+Alt+M toggles mirroring from anywhere, including from inside a game.
 constexpr int kHotkeyToggle = 1;
@@ -70,6 +87,15 @@ class ConfigWindow {
   // Starts mirroring by itself when the saved pair is fully connected.
   void MaybeAutoStartMirroring();
 
+  // Tray icon. The window is hidden rather than minimised, so it leaves the
+  // taskbar entirely and the icon is the only way back to it.
+  bool AddTrayIcon();
+  void RemoveTrayIcon();
+  void UpdateTrayTooltip();
+  void HideToTray();
+  void ShowFromTray();
+  void ShowTrayMenu();
+
   HWND hwnd_ = nullptr;
   HWND sourceCombo_ = nullptr;
   HWND targetCombo_ = nullptr;
@@ -86,6 +112,11 @@ class ConfigWindow {
   Settings settings_;
   bool tearingSupported_ = false;
   bool hotkeyRegistered_ = false;
+  bool trayIconAdded_ = false;
+  HICON trayIcon_ = nullptr;
+  // Set once the user has been told where the window went, so the explanation
+  // appears the first time and not on every minimise.
+  bool trayHintShown_ = false;
   // Set when the user stops mirroring by hand, so auto-start does not
   // immediately undo it. Cleared as soon as the saved pair is incomplete
   // again, which is what makes switching the TV off and on re-arm it.
@@ -227,6 +258,108 @@ void ConfigWindow::RefreshDisplays() {
   UpdateStartButton();
 }
 
+bool ConfigWindow::AddTrayIcon() {
+  NOTIFYICONDATAW data = {};
+  data.cbSize = sizeof(data);
+  data.hWnd = hwnd_;
+  data.uID = kTrayIconId;
+  data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+  data.uCallbackMessage = kTrayCallbackMessage;
+  if (!trayIcon_) {
+    trayIcon_ = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr),
+                                              MAKEINTRESOURCEW(IDI_APPICON), IMAGE_ICON,
+                                              GetSystemMetrics(SM_CXSMICON),
+                                              GetSystemMetrics(SM_CYSMICON), 0));
+  }
+  data.hIcon = trayIcon_ ? trayIcon_ : LoadIconW(nullptr, IDI_APPLICATION);
+  wcscpy_s(data.szTip, L"DisplayMirror");
+
+  trayIconAdded_ = Shell_NotifyIconW(NIM_ADD, &data) != FALSE;
+  if (!trayIconAdded_) {
+    DM_WARN(L"The tray icon could not be added; the window stays in the taskbar.");
+    return false;
+  }
+  UpdateTrayTooltip();
+  return true;
+}
+
+void ConfigWindow::RemoveTrayIcon() {
+  if (!trayIconAdded_) return;
+  NOTIFYICONDATAW data = {};
+  data.cbSize = sizeof(data);
+  data.hWnd = hwnd_;
+  data.uID = kTrayIconId;
+  Shell_NotifyIconW(NIM_DELETE, &data);
+  trayIconAdded_ = false;
+  if (trayIcon_) {
+    DestroyIcon(trayIcon_);
+    trayIcon_ = nullptr;
+  }
+}
+
+void ConfigWindow::UpdateTrayTooltip() {
+  if (!trayIconAdded_) return;
+
+  NOTIFYICONDATAW data = {};
+  data.cbSize = sizeof(data);
+  data.hWnd = hwnd_;
+  data.uID = kTrayIconId;
+  data.uFlags = NIF_TIP;
+
+  // The tooltip is the only status this thing shows while it is hidden, so it
+  // names the pair rather than just saying "running".
+  if (session_.IsRunning()) {
+    _snwprintf_s(data.szTip, _countof(data.szTip), _TRUNCATE, L"DisplayMirror - %s to %s",
+                 session_.Config().source.friendlyName.c_str(),
+                 session_.Config().target.friendlyName.c_str());
+  } else {
+    wcscpy_s(data.szTip, L"DisplayMirror - not mirroring");
+  }
+  Shell_NotifyIconW(NIM_MODIFY, &data);
+}
+
+void ConfigWindow::HideToTray() {
+  // Hidden, not minimised: a minimised window still owns a taskbar button.
+  ShowWindow(hwnd_, SW_HIDE);
+  if (!trayIconAdded_) {
+    // Without an icon there would be no way back to the window at all.
+    ShowWindow(hwnd_, SW_MINIMIZE);
+    return;
+  }
+  if (!trayHintShown_) {
+    DM_INFO(L"Running in the notification area. Double-click the tray icon to "
+            L"bring this window back, or right-click it for the menu.");
+    trayHintShown_ = true;
+  }
+}
+
+void ConfigWindow::ShowFromTray() {
+  ShowWindow(hwnd_, SW_SHOW);
+  ShowWindow(hwnd_, SW_RESTORE);
+  SetForegroundWindow(hwnd_);
+}
+
+void ConfigWindow::ShowTrayMenu() {
+  HMENU menu = CreatePopupMenu();
+  if (!menu) return;
+
+  AppendMenuW(menu, MF_STRING, kIdTrayShow, L"Show DisplayMirror");
+  AppendMenuW(menu, MF_STRING, kIdTrayToggle,
+              session_.IsRunning() ? L"Stop mirroring" : L"Start mirroring");
+  AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(menu, MF_STRING, kIdTrayExit, L"Exit");
+  SetMenuDefaultItem(menu, kIdTrayShow, FALSE);
+
+  POINT cursor = {};
+  GetCursorPos(&cursor);
+
+  // Required, or the menu will not dismiss when the user clicks elsewhere.
+  SetForegroundWindow(hwnd_);
+  TrackPopupMenu(menu, TPM_RIGHTBUTTON, cursor.x, cursor.y, 0, hwnd_, nullptr);
+  PostMessageW(hwnd_, WM_NULL, 0, 0);
+  DestroyMenu(menu);
+}
+
 int ConfigWindow::IndexOfPersistentId(const std::wstring& persistentId) const {
   if (persistentId.empty()) return -1;
   for (size_t i = 0; i < displays_.size(); ++i) {
@@ -284,6 +417,7 @@ void ConfigWindow::UpdateStartButton() {
 
   SetWindowTextW(startButton_,
                  session_.IsRunning() ? L"Stop mirroring" : L"Start mirroring");
+  UpdateTrayTooltip();
 
   const bool selectable = source >= 0 && target >= 0 && source != target &&
                           displays_.size() >= 2;
@@ -328,8 +462,8 @@ void ConfigWindow::StartMirroring() {
 
   SaveCurrentSettings();
   UpdateStartButton();
-  // Get out of the way, but stay reachable in the taskbar.
-  ShowWindow(hwnd_, SW_MINIMIZE);
+  // Get out of the way entirely, but stay reachable through the tray icon.
+  HideToTray();
 }
 
 void ConfigWindow::StopMirroring() {
@@ -337,8 +471,9 @@ void ConfigWindow::StopMirroring() {
   autoStartSuppressed_ = true;
   session_.Stop();
   UpdateStartButton();
-  ShowWindow(hwnd_, SW_RESTORE);
-  SetForegroundWindow(hwnd_);
+  // The window is deliberately left as it is. Stopping from the hotkey or the
+  // tray menu should not throw a window in front of whatever is on screen; the
+  // tray tooltip carries the state instead.
 }
 
 void ConfigWindow::ToggleMirroring() {
@@ -362,6 +497,27 @@ LRESULT CALLBACK ConfigWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARA
 }
 
 LRESULT ConfigWindow::Handle(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+  // Explorer restarted and every tray icon has to be registered again.
+  if (msg == g_taskbarCreatedMessage && g_taskbarCreatedMessage != 0) {
+    trayIconAdded_ = false;
+    AddTrayIcon();
+    return 0;
+  }
+
+  if (msg == kTrayCallbackMessage) {
+    switch (LOWORD(lparam)) {
+      case WM_LBUTTONDBLCLK:
+        ShowFromTray();
+        return 0;
+      case WM_RBUTTONUP:
+      case WM_CONTEXTMENU:
+        ShowTrayMenu();
+        return 0;
+      default:
+        return 0;
+    }
+  }
+
   switch (msg) {
     case WM_CREATE:
       CreateControls(hwnd);
@@ -371,7 +527,14 @@ LRESULT ConfigWindow::Handle(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     case WM_COMMAND:
       switch (LOWORD(wparam)) {
         case kIdStartButton:
+        case kIdTrayToggle:
           ToggleMirroring();
+          return 0;
+        case kIdTrayShow:
+          ShowFromTray();
+          return 0;
+        case kIdTrayExit:
+          DestroyWindow(hwnd);
           return 0;
         case kIdRefreshButton:
           if (!session_.IsRunning()) RefreshDisplays();
@@ -459,11 +622,29 @@ LRESULT ConfigWindow::Handle(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       if (wparam == WTS_SESSION_UNLOCK) DM_INFO(L"Session unlocked.");
       return 0;
 
+    case WM_SYSCOMMAND:
+      // Minimising hides the window instead: a minimised window still owns a
+      // taskbar button, and the point of the tray icon is to not have one.
+      if ((wparam & 0xFFF0) == SC_MINIMIZE) {
+        HideToTray();
+        return 0;
+      }
+      break;
+
     case WM_CLOSE:
+      // Closing hides too. This thing is meant to sit there waiting for the TV
+      // to come on, so the X button must not end that; Exit in the tray menu
+      // is what quits. With no tray icon there would be nothing to come back
+      // from, so then it really does close.
+      if (trayIconAdded_) {
+        HideToTray();
+        return 0;
+      }
       DestroyWindow(hwnd);
       return 0;
 
     case WM_DESTROY:
+      RemoveTrayIcon();
       session_.Stop();
       WTSUnRegisterSessionNotification(hwnd);
       if (hotkeyRegistered_) UnregisterHotKey(hwnd, kHotkeyToggle);
@@ -492,7 +673,9 @@ bool ConfigWindow::Create(bool startMinimized) {
   wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
   wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
   wc.lpszClassName = kConfigClass;
-  wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+  wc.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APPICON));
+  if (!wc.hIcon) wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+  wc.hIconSm = wc.hIcon;
   if (!RegisterClassExW(&wc)) return false;
 
   RECT rect = {0, 0, 668, 438};
@@ -508,6 +691,11 @@ bool ConfigWindow::Create(bool startMinimized) {
   // Without this subscription WM_WTSSESSION_CHANGE is never delivered.
   WTSRegisterSessionNotification(hwnd_, NOTIFY_FOR_THIS_SESSION);
 
+  if (g_taskbarCreatedMessage == 0) {
+    g_taskbarCreatedMessage = RegisterWindowMessageW(L"TaskbarCreated");
+  }
+  AddTrayIcon();
+
   hotkeyRegistered_ = RegisterHotKey(hwnd_, kHotkeyToggle, kHotkeyModifiers, kHotkeyVk) != FALSE;
   if (!hotkeyRegistered_) {
     DM_WARN(L"Could not register the Ctrl+Alt+M hotkey; another application owns it.");
@@ -515,8 +703,14 @@ bool ConfigWindow::Create(bool startMinimized) {
 
   DM_INFO(L"Tearing support: %s", tearingSupported_ ? L"yes" : L"no");
 
-  ShowWindow(hwnd_, startMinimized ? SW_SHOWMINNOACTIVE : SW_SHOW);
-  UpdateWindow(hwnd_);
+  if (startMinimized && trayIconAdded_) {
+    // Started from the Run key: no window, no taskbar button, just the icon.
+    DM_INFO(L"Started minimised to the notification area.");
+    trayHintShown_ = true;
+  } else {
+    ShowWindow(hwnd_, startMinimized ? SW_SHOWMINNOACTIVE : SW_SHOW);
+    UpdateWindow(hwnd_);
+  }
 
   // Only now, with the window up and the log pane able to show what happens.
   MaybeAutoStartMirroring();

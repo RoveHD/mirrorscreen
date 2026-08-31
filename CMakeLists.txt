@@ -5,6 +5,11 @@ project(DisplayMirror
         DESCRIPTION "Mirror one display onto another with independent resolution and refresh rate"
         LANGUAGES CXX)
 
+# The .rc carries the application and tray icon.
+if(WIN32)
+    enable_language(RC)
+endif()
+
 if(NOT WIN32)
     message(FATAL_ERROR "DisplayMirror targets Windows only.")
 endif()
@@ -15,6 +20,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_executable(DisplayMirror WIN32
     src/main.cpp
+    src/app.rc
     src/displays.cpp
     src/capture.cpp
     src/renderer.cpp
@@ -27,6 +33,7 @@ add_executable(DisplayMirror WIN32
     src/mirror.h
     src/settings.h
     src/log.h
+    src/resource.h
 )
 
 target_compile_definitions(DisplayMirror PRIVATE
@@ -45,6 +52,7 @@ target_link_libraries(DisplayMirror PRIVATE
     user32
     gdi32
     comctl32
+    shell32
     ole32
     wtsapi32
 )

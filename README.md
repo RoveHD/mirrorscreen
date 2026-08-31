@@ -359,14 +359,33 @@ the primary one.
 2. Pick the **target display** (the one to mirror onto — the TV).
 3. Press **Start mirroring**.
 
-The config window minimises itself and a borderless, title-bar-free window
-covers the whole target display.
+The config window disappears into the notification area and a borderless,
+title-bar-free window covers the whole target display.
 
 | Control | Action |
 |---|---|
 | `Ctrl` + `Alt` + `M` | Start / stop mirroring, from anywhere including inside a game |
 | `ESC` | Stop, when the output window has focus |
 | **Stop mirroring** | Same, from the config window |
+| Tray icon, double-click | Bring the config window back |
+| Tray icon, right-click | Show, start/stop, or exit |
+
+### It lives in the tray, not the taskbar
+
+Minimising, closing and starting to mirror all **hide** the window rather than
+minimise it — a minimised window still owns a taskbar button, which is the
+thing being avoided. The tray icon is then the only way back to it, and its
+tooltip carries the state: either `not mirroring`, or the pair being mirrored.
+
+The X button therefore does not quit. This is a program meant to sit there
+waiting for a TV to be switched on, so closing the window is not the same as
+being done with it; **Exit** in the tray menu is what quits. (If the tray icon
+could not be registered at all, the X button closes normally rather than
+leaving no way back.)
+
+Stopping does *not* pop the window back up. Stopping from the hotkey usually
+means a game is on the source display, and throwing a window in front of it
+would be the wrong answer.
 
 Source and target cannot be the same display; the Start button stays disabled
 until two different ones are selected.
@@ -384,7 +403,7 @@ step to forget and no settings file to lose.
 |---|---|
 | **Mirror the mouse cursor** | Composites the pointer. Can be toggled while mirroring. |
 | **Allow tearing** | **On by default.** Greyed out when DXGI reports no tearing support. Takes effect at the next start, since the flag is baked into the swap chain. |
-| **Start with Windows** | Adds this executable to `HKCU\...\CurrentVersion\Run`, with `--minimized` so it does not appear in front of you at logon. |
+| **Start with Windows** | Adds this executable to `HKCU\...\CurrentVersion\Run`, with `--minimized`, which starts it straight into the tray: no window and no taskbar button at logon. |
 | **Start mirroring when both displays are connected** | Off until you ask for it. Once on, mirroring starts by itself whenever the saved pair is complete. |
 
 The saved pair is stored as each monitor's **device path**, not as its name or
@@ -569,6 +588,15 @@ Settings and autostart:
 - [ ] Auto-start fires when the TV is switched on
 - [ ] Auto-start does *not* restart a session stopped by hand
 - [ ] Switching the TV off and on re-arms auto-start after a manual stop
+
+Tray:
+- [ ] The icon appears and is identifiable
+- [ ] Its tooltip names the mirrored pair while mirroring, and says so when not
+- [ ] Minimise, close and Start mirroring all leave no taskbar button
+- [ ] Double-clicking the icon brings the window back
+- [ ] The right-click menu starts, stops and exits
+- [ ] `--minimized` shows no window at all, only the icon
+- [ ] The icon comes back after Explorer is restarted
 
 Games:
 - [ ] A D3D11 title, borderless
