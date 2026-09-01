@@ -34,6 +34,12 @@ struct Settings {
   // Off until the user asks for it. Auto-starting on a pair the user never
   // chose would be a surprise.
   bool autoMirror = false;
+  // Look for a new release on GitHub. The check is a single HTTPS request on a
+  // worker thread, at most once a day; nothing is ever installed unasked.
+  bool checkForUpdates = true;
+  // When the last check ran, as a Unix timestamp, so restarting the program
+  // ten times in a row does not mean ten requests.
+  ULONGLONG lastUpdateCheck = 0;
 
   // False when nothing has ever been saved, so the caller knows to fall back
   // to its own defaults for the display selection.

@@ -1,3 +1,35 @@
+#include <windows.h>
+
 #include "resource.h"
 
 IDI_APPICON ICON "app.ico"
+
+// Keep in step with src/version.h and installer/DisplayMirror.nsi.
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     1,0,0,0
+PRODUCTVERSION  1,0,0,0
+FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+FILEFLAGS       0
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "DisplayMirror"
+            VALUE "FileDescription",  "Mirror one display onto another, each keeping its own resolution and refresh rate"
+            VALUE "FileVersion",      "1.0.0.0"
+            VALUE "InternalName",     "DisplayMirror"
+            VALUE "LegalCopyright",   ""
+            VALUE "OriginalFilename", "DisplayMirror.exe"
+            VALUE "ProductName",      "DisplayMirror"
+            VALUE "ProductVersion",   "1.0.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

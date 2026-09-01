@@ -26,12 +26,17 @@ add_executable(DisplayMirror WIN32
     src/renderer.cpp
     src/mirror.cpp
     src/settings.cpp
+    src/theme.cpp
+    src/updater.cpp
     src/log.cpp
     src/displays.h
     src/capture.h
     src/renderer.h
     src/mirror.h
     src/settings.h
+    src/theme.h
+    src/updater.h
+    src/version.h
     src/log.h
     src/resource.h
 )
@@ -53,6 +58,10 @@ target_link_libraries(DisplayMirror PRIVATE
     gdi32
     comctl32
     shell32
+    dwmapi
+    uxtheme
+    gdiplus
+    winhttp
     ole32
     wtsapi32
 )

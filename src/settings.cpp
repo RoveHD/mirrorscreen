@@ -46,6 +46,23 @@ bool ReadBool(HKEY key, const wchar_t* name, bool fallback) {
   return value != 0;
 }
 
+ULONGLONG ReadQword(HKEY key, const wchar_t* name) {
+  DWORD type = 0;
+  ULONGLONG value = 0;
+  DWORD bytes = sizeof(value);
+  if (RegQueryValueExW(key, name, nullptr, &type, reinterpret_cast<LPBYTE>(&value),
+                       &bytes) != ERROR_SUCCESS ||
+      type != REG_QWORD) {
+    return 0;
+  }
+  return value;
+}
+
+void WriteQword(HKEY key, const wchar_t* name, ULONGLONG value) {
+  RegSetValueExW(key, name, 0, REG_QWORD, reinterpret_cast<const BYTE*>(&value),
+                 sizeof(value));
+}
+
 void WriteString(HKEY key, const wchar_t* name, const std::wstring& value) {
   RegSetValueExW(key, name, 0, REG_SZ, reinterpret_cast<const BYTE*>(value.c_str()),
                  static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t)));
@@ -80,6 +97,8 @@ Settings LoadSettings() {
   settings.drawCursor = ReadBool(key, L"DrawCursor", settings.drawCursor);
   settings.allowTearing = ReadBool(key, L"AllowTearing", settings.allowTearing);
   settings.autoMirror = ReadBool(key, L"AutoMirror", settings.autoMirror);
+  settings.checkForUpdates = ReadBool(key, L"CheckForUpdates", settings.checkForUpdates);
+  settings.lastUpdateCheck = ReadQword(key, L"LastUpdateCheck");
   settings.valid = true;
   RegCloseKey(key);
 
@@ -109,6 +128,8 @@ void SaveSettings(const Settings& settings) {
   WriteBool(key, L"DrawCursor", settings.drawCursor);
   WriteBool(key, L"AllowTearing", settings.allowTearing);
   WriteBool(key, L"AutoMirror", settings.autoMirror);
+  WriteBool(key, L"CheckForUpdates", settings.checkForUpdates);
+  WriteQword(key, L"LastUpdateCheck", settings.lastUpdateCheck);
   RegCloseKey(key);
 }
 

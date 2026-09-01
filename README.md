@@ -397,6 +397,28 @@ title-bar-free window covers the whole target display.
 | Tray icon, double-click | Bring the config window back |
 | Tray icon, right-click | Show, start/stop, or exit |
 
+### How it looks
+
+The window follows the system: **light or dark by the Windows setting**, the
+title bar included, with the **system accent colour** on the primary button and
+rounded window corners on Windows 11. It reacts to the theme being switched
+while it is open, and to being dragged onto a display with a different scaling
+factor — the whole layout is defined in 96-dpi units and scaled to whatever
+window it ends up in, rather than being fixed pixel positions that go tiny at
+150%.
+
+None of that comes free with a Win32 window. The dark title bar and the rounded
+corners are DWM attributes that have to be asked for; the common controls need
+their dark variants selected by name (combo boxes have their own, `DarkMode_CFD`,
+separate from `DarkMode_Explorer`); text and backgrounds come from handling the
+`WM_CTLCOLOR*` messages. The buttons are owner-drawn against GDI+ so their
+rounded corners are antialiased, and each is subclassed to track the pointer,
+because a button is not told when the mouse is over it.
+
+The accent colour is read from the system and adjusted if it would not work:
+too dark against a dark background and it is lightened, and the label on it is
+black or white depending on its luminance, rather than assuming white.
+
 ### It lives in the tray, not the taskbar
 
 Minimising, closing and starting to mirror all **hide** the window rather than
@@ -432,7 +454,8 @@ step to forget and no settings file to lose.
 | **Allow tearing** | **On by default.** Greyed out when DXGI reports no tearing support. Takes effect at the next start, since the flag is baked into the swap chain. |
 | **Start with Windows** | Adds this executable to `HKCU\...\CurrentVersion\Run`, with `--minimized`, which starts it straight into the tray: no window and no taskbar button at logon. |
 
-| **Start mirroring when both displays are connected** | Off until you ask for it. Once on, mirroring starts by itself whenever the saved pair is complete. |
+| **Auto-start when both displays are here** | Off until you ask for it. Once on, mirroring starts by itself whenever the saved pair is complete. |
+| **Check for updates on GitHub** | On. One HTTPS request a day, on a worker thread. Nothing is ever installed without being asked. |
 
 #### "Start with Windows" without an installer
 
@@ -465,6 +488,41 @@ Auto-start deliberately loses to you. Stopping by hand — the button, `ESC`, or
 `Ctrl+Alt+M` — suppresses it, so it will not immediately restart what you just
 stopped. The suppression clears as soon as the pair is incomplete again, which
 means switching the TV off and on is what re-arms it.
+
+### Updates
+
+**Check for updates** asks `api.github.com` for the latest release of this
+repository, compares its tag against the version built into the executable, and
+offers to fetch the installer from that release. It also runs by itself at most
+once a day when the checkbox is on.
+
+What it will and will not do:
+
+* The request runs on a worker thread and posts its result back as a message.
+  The window never blocks on the network.
+* **Nothing installs without being asked.** With the window open it asks; with
+  the window hidden in the tray it shows a balloon and waits to be clicked,
+  because a modal box in front of a full-screen game is worse than any update
+  is urgent.
+* The download URL comes out of a network response and is about to be executed,
+  so it is checked: **https only, and only a `github.com` or
+  `githubusercontent.com` host**. WinHTTP validates the certificate chain,
+  which is why this uses WinHTTP rather than a socket.
+* What comes back has to start with `MZ` before it is launched. A redirect to
+  an error page does not, and is discarded rather than run.
+* Of the assets on a release, one whose name says *setup* or *install* wins.
+  Otherwise a release carrying both the installer and the portable exe could
+  hand back the portable one, and "installing" it would just start the old
+  program again.
+
+Releases are built by `.github/workflows/release.yml` when a `v*` tag is
+pushed: it builds with MSVC, builds the installer with NSIS, and attaches both.
+It **fails the build if `src/version.h` does not match the tag** — a release the
+program cannot recognise as installed would be offered again on every check,
+forever.
+
+Bumping a version means three files: `src/version.h`, the `VERSIONINFO` block in
+`src/app.rc`, and `APP_VERSION` in `installer/DisplayMirror.nsi`.
 
 A log is written to `DisplayMirror.log` next to the executable and shown live in
 the config window. It logs state transitions only — adapters and displays
@@ -646,6 +704,20 @@ Tray:
 - [ ] The right-click menu starts, stops and exits
 - [ ] `--minimized` shows no window at all, only the icon
 - [ ] The icon comes back after Explorer is restarted
+
+Appearance:
+- [ ] Dark and light both look right, including the title bar
+- [ ] Switching the Windows theme while it is open updates it
+- [ ] The accent colour is picked up, and its label stays legible
+- [ ] Buttons highlight under the pointer
+- [ ] Dragging the window between displays with different scaling relayouts it
+- [ ] Nothing flickers while the log fills
+
+Updates:
+- [ ] "Check for updates" reports being up to date on the current release
+- [ ] A newer release is offered, downloaded and installed
+- [ ] With no release published at all, it says so instead of failing oddly
+- [ ] The balloon appears instead of a dialog while hidden in the tray
 
 Games:
 - [ ] A D3D11 title, borderless

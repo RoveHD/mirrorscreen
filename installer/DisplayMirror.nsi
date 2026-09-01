@@ -11,7 +11,11 @@
 Unicode true
 
 !define APP_NAME    "DisplayMirror"
-!define APP_VERSION "1.0.0"
+; Overridden by the release workflow from the tag; keep the default in step
+; with src/version.h.
+!ifndef APP_VERSION
+  !define APP_VERSION "1.0.0"
+!endif
 !define APP_EXE_NAME "DisplayMirror.exe"
 !define UNINSTALL_KEY \
     "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}"
