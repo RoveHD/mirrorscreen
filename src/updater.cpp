@@ -4,6 +4,7 @@
 #include <winhttp.h>
 
 #include <cctype>
+#include <cstring>
 #include <vector>
 
 #include "log.h"
