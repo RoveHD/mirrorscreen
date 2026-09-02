@@ -1,11 +1,16 @@
 # Builds a release and publishes it, which is what the in-app update check
-# looks at. Runs when a v* tag is pushed.
+# looks at. Runs when a v* tag is pushed, or on demand with a version given.
 name: Release
 
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, without the leading v (e.g. 1.0.0). Must match src/version.h. The tag is created by this run.'
+        required: true
+        type: string
 
 jobs:
   build:
@@ -20,23 +25,25 @@ jobs:
         id: version
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}"
-          $version = $tag -replace '^v', ''
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
+            $version = '${{ inputs.version }}'.Trim().TrimStart('v')
+          } else {
+            $version = '${{ github.ref_name }}' -replace '^v', ''
+          }
           if ($version -notmatch '^\d+\.\d+\.\d+$') {
-            # A manual run has no v* tag; fall back to what the source says.
-            $version = (Select-String -Path src/version.h -Pattern 'DM_VERSION_STRING L"([^"]+)"').Matches[0].Groups[1].Value
+            throw "'$version' is not a three-part version number."
           }
           "version=$version" >> $env:GITHUB_OUTPUT
 
       # An update the program cannot recognise as installed would be offered
       # again on every check, so the tag and the built-in version must agree.
-      - name: Check the version in the source matches the tag
+      - name: Check the version in the source matches
         shell: pwsh
         run: |
           $expected = "${{ steps.version.outputs.version }}"
           $actual = (Select-String -Path src/version.h -Pattern 'DM_VERSION_STRING L"([^"]+)"').Matches[0].Groups[1].Value
           if ($actual -ne $expected) {
-            throw "src/version.h says $actual but the tag says $expected. Bump src/version.h, src/app.rc and installer/DisplayMirror.nsi first."
+            throw "src/version.h says $actual but this release is $expected. Bump src/version.h, src/app.rc and installer/DisplayMirror.nsi first."
           }
 
       - name: Configure
@@ -57,10 +64,14 @@ jobs:
                       /DAPP_EXE=..\build\Release\DisplayMirror.exe `
                       /DOUT_FILE=..\DisplayMirror-Setup.exe `
                       DisplayMirror.nsi
+          if ($LASTEXITCODE -ne 0) { throw "makensis failed with $LASTEXITCODE" }
 
+      # tag_name is passed explicitly so a manual run creates the tag itself.
+      # Pushing a tag is not something every caller of this workflow can do.
       - name: Publish the release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.version.outputs.version }}
           name: DisplayMirror ${{ steps.version.outputs.version }}
           generate_release_notes: true
           files: |
