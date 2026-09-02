@@ -6,6 +6,10 @@ using std::max;
 using std::min;
 
 #include <dwmapi.h>
+// objidl.h before gdiplus.h, as the GDI+ documentation requires: its headers
+// use STDMETHOD and IStream, which WIN32_LEAN_AND_MEAN keeps windows.h from
+// pulling in. MinGW happens to get them by another route; MSVC does not.
+#include <objidl.h>
 #include <gdiplus.h>
 #include <uxtheme.h>
 
