@@ -4,6 +4,10 @@
 
 IDI_APPICON ICON "app.ico"
 
+// Embedded for every toolchain rather than only for MSVC: the common controls
+// v6 dependency is what makes the themed and dark-mode controls work at all.
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "app.manifest"
+
 // Keep in step with src/version.h and installer/DisplayMirror.nsi.
 VS_VERSION_INFO VERSIONINFO
 FILEVERSION     1,0,0,0

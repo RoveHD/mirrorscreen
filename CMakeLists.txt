@@ -39,6 +39,7 @@ add_executable(DisplayMirror WIN32
     src/version.h
     src/log.h
     src/resource.h
+    src/app.manifest
 )
 
 target_compile_definitions(DisplayMirror PRIVATE
@@ -68,9 +69,9 @@ target_link_libraries(DisplayMirror PRIVATE
 
 if(MSVC)
     target_compile_options(DisplayMirror PRIVATE /W4 /permissive- /utf-8)
-    # The config window uses the v6 common controls for a native look.
-    target_link_options(DisplayMirror PRIVATE
-        "/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'")
+    # src/app.manifest is embedded through the .rc for every toolchain, so the
+    # linker must not generate a second, competing one.
+    target_link_options(DisplayMirror PRIVATE "/MANIFEST:NO")
     set_property(TARGET DisplayMirror PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 else()
     # MinGW is not a supported target, but keeping it building is a cheap way
