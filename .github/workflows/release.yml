@@ -46,13 +46,35 @@ jobs:
             throw "src/version.h says $actual but this release is $expected. Bump src/version.h, src/app.rc and installer/DisplayMirror.nsi first."
           }
 
+      # The generator is not hard-coded: windows-latest moves to a new Visual
+      # Studio every so often, and naming one version is what broke this. Try
+      # the known generators newest first, then fall back to whatever CMake
+      # picks for itself.
       - name: Configure
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+        shell: pwsh
+        run: |
+          $generators = @('Visual Studio 18 2026', 'Visual Studio 17 2022')
+          $configured = $false
+          foreach ($generator in $generators) {
+            Write-Host "Trying generator: $generator"
+            cmake -S . -B build -G $generator -A x64
+            if ($LASTEXITCODE -eq 0) { $configured = $true; break }
+            Remove-Item -Recurse -Force build -ErrorAction SilentlyContinue
+          }
+          if (-not $configured) {
+            Write-Host 'Falling back to the default generator'
+            cmake -S . -B build
+            if ($LASTEXITCODE -ne 0) { throw 'CMake could not configure the project.' }
+          }
 
       - name: Build
-        run: cmake --build build --config Release
+        shell: pwsh
+        run: |
+          cmake --build build --config Release
+          if ($LASTEXITCODE -ne 0) { throw "The build failed with $LASTEXITCODE" }
 
       - name: Build the installer
+        id: installer
         shell: pwsh
         working-directory: installer
         run: |
@@ -60,11 +82,18 @@ jobs:
           if (-not (Test-Path $makensis)) {
             choco install nsis -y --no-progress
           }
+          # A single-config generator puts the exe straight in build/, a
+          # multi-config one in build/Release. Take whichever exists.
+          $exe = Get-ChildItem -Path ..\build -Filter DisplayMirror.exe -Recurse |
+                 Select-Object -First 1
+          if (-not $exe) { throw 'DisplayMirror.exe was not found in the build output.' }
+          Write-Host "Packaging $($exe.FullName)"
           & $makensis /DAPP_VERSION=${{ steps.version.outputs.version }} `
-                      /DAPP_EXE=..\build\Release\DisplayMirror.exe `
+                      /DAPP_EXE=$($exe.FullName) `
                       /DOUT_FILE=..\DisplayMirror-Setup.exe `
                       DisplayMirror.nsi
           if ($LASTEXITCODE -ne 0) { throw "makensis failed with $LASTEXITCODE" }
+          "exe=$($exe.FullName)" >> $env:GITHUB_OUTPUT
 
       # tag_name is passed explicitly so a manual run creates the tag itself.
       # Pushing a tag is not something every caller of this workflow can do.
@@ -76,4 +105,4 @@ jobs:
           generate_release_notes: true
           files: |
             DisplayMirror-Setup.exe
-            build/Release/DisplayMirror.exe
+            ${{ steps.installer.outputs.exe }}
